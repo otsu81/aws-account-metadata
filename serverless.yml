@@ -1,0 +1,99 @@
+service: account-metadata
+
+provider:
+  name: aws
+  stage: ${opt:stage, 'dev'}
+  runtime: python3.8
+  memorySize: 256
+  region: ${file(env.yml):${self:provider.stage}.default_region}
+  iamRoleStatements:
+    - Effect: Allow
+      Action: sts:AssumeRole
+      Resource: arn:aws:iam::*:role/*
+  environment:
+    DEFAULT_ROLE: ${file(env.yml):${self:provider.stage}.default_role}
+    S3_READONLY_ROLE: ${file(env.yml):${self:provider.stage}.s3_readonly_role}
+    DEFAULT_REGION: ${file(env.yml):${self:provider.stage}.default_region}
+    DEFAULT_ACCOUNT: ${file(env.yml):${self:provider.stage}.default_account}
+    HTML_BUCKET: ${file(env.yml):${self:provider.stage}.html_bucket}
+    TABLE_NAME: ${file(env.yml):${self:provider.stage}.table_name}
+    DEFAULT_FILENAME: ${file(env.yml):${self:provider.stage}.default_filename}
+
+package:
+  include:
+    - handler.py
+    - code/__init__.py
+    - code/account_ops.py
+    - code/boto_factory.py
+    - code/ddb_ops.py
+    - code/ddb_to_html.py
+    - code/s3_ops.py
+    - html_templating/*
+  exclude:
+    - "*"
+    - "*/**"
+
+functions:
+  main:
+    handler: handler.main
+    description: Creates a HTML page with clickable roleswitch URLs from an AWS organization
+    timeout: 900
+
+# Dockerize pip to increase compatibility with Serverless framework
+custom:
+  pythonRequirements:
+    noDeploy:  # can exlude common libraries to minimize package size
+      - pytest
+      - docutils
+      - jmespath
+      - pip
+      - python-dateutil
+      - s3transfer
+      - setuptools
+      - six
+      - urllib3
+    dockerizePip: true
+
+plugins:
+  - serverless-python-requirements
+
+# cloudformation stuff to create the S3 bucket and the role
+resources:
+  Resources:
+    Bucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${file(env.yml):${self:provider.stage}.html_bucket}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: True
+          BlockPublicPolicy: True
+          IgnorePublicAcls: True
+          RestrictPublicBuckets: True
+
+    Role:
+      Type: AWS::IAM::Role
+      Properties:
+        Description: Allows read-only for the S3 bucket created in this CFN
+        RoleName: ${file(env.yml):${self:provider.stage}.s3_readonly_role}
+        AssumeRolePolicyDocument:
+          Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Join:
+                  - ""
+                  - - "arn:aws:iam::"
+                    - Ref: "AWS::AccountId"
+                    - ":root"
+        Policies:
+          - PolicyName: ReadOnlyS3Bucket
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - "s3:Get*"
+                    - "s3:List*"
+                  Resource:
+                    - "*"
